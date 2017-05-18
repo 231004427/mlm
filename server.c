@@ -264,7 +264,7 @@ void server_job_function(struct client *this_client)
                 //printf("读取结束\n ");
                 break;
             }
-            printf("from server size:%zd\n ",size);
+            //printf("from server size:%zd\n ",size);
             //return;
             i=0;
             for(i=0;i<size;i++)
