@@ -21,7 +21,7 @@
 #include "mylist.h"
 
 /* Port to listen on. */
-#define SERVER_PORT 8888
+#define SERVER_PORT 8792
 /* Connection backlog (# of backlogged connections to accept). */
 #define CONNECTION_BACKLOG 8
 /* Socket read and write timeouts, in seconds. */
@@ -59,10 +59,10 @@ int recv_fd(const int sock_fd);
 int setnonblock(int fd);
 void closeClientFd(client_t *client);
 void closeAndFreeClient(client_t *client);
-void server_job_function(struct client *this_client);
-void buffered_on_read(int sock, short event, void* arg);
+void server_job_function(client_t *this_client);
+void buffered_on_read(int fd, short what, void* arg);
 void buffered_on_write(struct bufferevent *bev, void *arg);
-void buffered_on_error(struct bufferevent *bev, short what, void *arg);
+void buffered_on_error(int fd, short what, void *arg);
 void thread_libevent_process(int fd, short which, void *arg);
 void thread_libevent_process2(int client_fd,struct event_base *base);
 void *worker_thread(void *arg);

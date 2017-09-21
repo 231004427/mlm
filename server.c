@@ -238,30 +238,129 @@ int runServer(void)
     
 	return 0;
 }
+void on_accept2(int sock, short ev, void *arg)
+{
+    //err_ret("on_accept2 error");
+    struct sockaddr_in ClientAddr;
+    int nClientSocket = -1;
+    socklen_t ClientLen = sizeof(ClientAddr);
+    nClientSocket = accept(sock,(struct sockaddr *)&ClientAddr, &ClientLen);
+    if(-1==nClientSocket)
+    {
+        err_ret("accet error");
+        return;
+    }
+    err_msg("[client:%d] connect to server ....",nClientSocket);
+    thread_libevent_process2(nClientSocket,dispatcher_thread.base);
+    
+    
+}
+void thread_libevent_process2(int client_fd,struct event_base *base)
+{
+    //int ret;
+    //char buf[128];
+    //通过管道管理用户sock id
+    
+    if (setnonblock(client_fd) < 0)
+        err_ret("failed to set client socket non-blocking");
+    
+    struct client *client;
+    client=buildClient();
+    if(client==NULL){
+        closeClientAll(client);
+        return;
+    }
+    client->fd = client_fd;
+    /*
+    if((client->buf_ev = bufferevent_socket_new(base, client_fd, 0))==NULL){
+        err_ret("client bufferevent creation failed");
+        closeClientFd(client);
+        return;
+    }
+    bufferevent_setcb(client->buf_ev, buffered_on_read, NULL,
+                      buffered_on_error, client);
+    //设置读写缓存
+    //bufferevent_setwatermark(client->buf_ev, EV_READ, 0, MAX_BUFFER);
+    //设置超时读写超时
+    //bufferevent_set_timeouts(client->buf_ev, &timeout_read, &timeout_write);
+    bufferevent_enable(client->buf_ev, EV_READ);
+    */
+    
+    if(-1==event_assign(client->listenEvent,base,client_fd,EV_TIMEOUT|EV_READ|EV_PERSIST,buffered_on_read,client))
+    {
+        err_sys("event_assign read error");
+    }
+    if(-1==event_add(client->listenEvent,NULL))
+    {
+        err_sys("event_add error");
+    }
+    
+    return;
+}
+/*用户有可读消息，创建消息处理线程*/
+void buffered_on_read(int fd, short what, void* arg)
+{
+    /*
+    printf("Got an event on socket %d:%s%s%s%s \n",
+           (int) fd,
+           (what&EV_TIMEOUT) ? " timeout" : "",
+           (what&EV_READ)    ? " read" : "",
+           (what&EV_WRITE)   ? " write" : "",
+           (what&EV_SIGNAL)  ? " signal" : "");
+    struct client *client = (client_t *)arg;*／
+
+    job_t *job;
+    if ((job = malloc(sizeof(*job))) == NULL) {
+        err_msg("failed to allocate memory for job state");
+        closeAndFreeClient(client);
+        return;
+    }
+    job->job_function = server_job_function;
+    job->user_data = arg;*/
+    
+    if(what&EV_READ){
+        //err_msg("read %d what%d",fd,what);
+        //数据读取只能使用单线程，多线程导致同时处理Client带来缓存处理问题
+        server_job_function(arg);
+    }
+    else{
+        //客户关闭
+        err_msg("[client:%d] socket error, disconnecting.",fd);
+        closeClientAll(arg);
+    }
+}
 /*工作线程处理，读消息*/
-void server_job_function(struct client *this_client)
+void server_job_function(client_t *this_client)
 {
     if(this_client!=NULL)
     {
+    	//判断缓存是否为空
+    	if(this_client->databuf ==NULL || this_client->readbuf==NULL){
+    		//缓存异常
+    		err_msg("[client:%d] buffer error.",this_client->fd);
+            closeClientAll(this_client);
+            return;
+    	}
         //建立读取缓存
         int size,i;
         int head_size=sizeof(struct myhead);
         //memset(buffer,0,sizeof(buffer));
         //bzero(&myhead,head_size);
         //int fd=bev->ev_read.ev_fd;
-        
         //printf("读取开始(j(%d),z(%d))\n",this_client->j,this_client->z);
         for (;;) {
             //size = bufferevent_read(bev, buffer, sizeof(buffer));
             size = read(this_client->fd,this_client->readbuf,MAX_READ_BUF);
+            //
             if (size == 0) {
                 //客户关闭
+                err_msg("客户关闭");
                 closeClientAll(this_client);
                 break;
             }
             if (size==-1) {
                 //读取结束
-                //printf("读取结束\n ");
+                //err_msg("读取结束\n ");
                 break;
             }
             //printf("from server size:%zd\n ",size);
@@ -296,7 +395,7 @@ void server_job_function(struct client *this_client)
                             //printf("包结束//////////:长度%d-头部%d-数据%d\n",j,head_size,z);
                             err_msg("[client:%d] type:%d from:%d to:%d size:%d server_job",this_client->fd,this_client->myhead.t,this_client->myhead.from,this_client->myhead.to,this_client->j);
                             //业务处理
-                            list_main(&(this_client->myhead),this_client->databuf,this_client,this_client->j);
+                            list_main(this_client);
                             //重置参数,开始接收新包
                             //bzero(&myhead,head_size);
                             //bzero(&data_buf,(1024*sizeof(char)));
@@ -315,7 +414,7 @@ void server_job_function(struct client *this_client)
                         //printf("包结束//////////:长度%d-头部%d-数据%d\n",j,head_size,z);
                         err_msg("[client:%d] type:%d from:%d to:%d size:%d server_job",this_client->fd,this_client->myhead.t,this_client->myhead.from,this_client->myhead.to,this_client->j);
                         //业务处理
-                        list_main(&(this_client->myhead),this_client->databuf,this_client,this_client->j);
+                        list_main(this_client);
                         //重置参数,开始接收新包
                         //bzero(&myhead,head_size);
                         //bzero(&data_buf,(1024*sizeof(char)));
@@ -328,44 +427,15 @@ void server_job_function(struct client *this_client)
         }
     }
 }
-/*用户有可读消息，创建消息处理线程*/
-void buffered_on_read(int fd, short what, void* arg)
-{
-    /*
-    printf("Got an event on socket %d:%s%s%s%s \n",
-           (int) fd,
-           (what&EV_TIMEOUT) ? " timeout" : "",
-           (what&EV_READ)    ? " read" : "",
-           (what&EV_WRITE)   ? " write" : "",
-           (what&EV_SIGNAL)  ? " signal" : "");
-    struct client *client = (client_t *)arg;
-    job_t *job;
-    if ((job = malloc(sizeof(*job))) == NULL) {
-        err_msg("failed to allocate memory for job state");
-        closeAndFreeClient(client);
-        return;
-    }
-    job->job_function = server_job_function;
-    job->user_data = arg;*/
-    
-    if(what&EV_READ){
-        server_job_function(arg);
-    }else{
-        //客户关闭
-        closeClientAll(arg);
-    }
-    
-    //workqueue_add_job(&workqueue, job);
-    
-}
 /*写消息*/
 void buffered_on_write(struct bufferevent *bev, void *arg) {
 }
 /*连接错误消息*/
-void buffered_on_error(struct bufferevent *bev, short what, void *arg)
+void buffered_on_error(int fd, short what, void *arg)
 {
-    struct client *client = (client_t *)arg;
     
+    struct client *client = (client_t *)arg;
+            
     if (what & BEV_EVENT_EOF) {
         err_msg("[client:%d] disconnected.",client->fd);
     }
@@ -425,65 +495,6 @@ void * worker_thread(void *arg)
     //event_base_dispatch(me->base);
     
     return NULL;
-}
-void on_accept2(int sock, short ev, void *arg)
-{
-    //err_ret("on_accept2 error");
-    struct sockaddr_in ClientAddr;
-    int nClientSocket = -1;
-    socklen_t ClientLen = sizeof(ClientAddr);
-    nClientSocket = accept(sock,(struct sockaddr *)&ClientAddr, &ClientLen);
-    if(-1==nClientSocket)
-    {
-        err_ret("accet error");
-        return;
-    }
-    err_msg("[client:%d] connect to server ....",nClientSocket);
-    thread_libevent_process2(nClientSocket,dispatcher_thread.base);
-    
-    
-}
-void thread_libevent_process2(int client_fd,struct event_base *base)
-{
-    //int ret;
-    //char buf[128];
-    //通过管道管理用户sock id
-    
-    if (setnonblock(client_fd) < 0)
-        err_ret("failed to set client socket non-blocking");
-    
-    struct client *client;
-    client=buildClient();
-    if(client==NULL){
-        closeClientAll(client);
-        return;
-    }
-    client->fd = client_fd;
-    /*
-    if((client->buf_ev = bufferevent_socket_new(base, client_fd, 0))==NULL){
-        err_ret("client bufferevent creation failed");
-        closeClientFd(client);
-        return;
-    }
-    bufferevent_setcb(client->buf_ev, buffered_on_read, NULL,
-                      buffered_on_error, client);
-    //设置读写缓存
-    //bufferevent_setwatermark(client->buf_ev, EV_READ, 0, MAX_BUFFER);
-    //设置超时读写超时
-    //bufferevent_set_timeouts(client->buf_ev, &timeout_read, &timeout_write);
-    bufferevent_enable(client->buf_ev, EV_READ);
-    */
-    
-    if(-1==event_assign(client->listenEvent,base,client_fd,EV_TIMEOUT|EV_READ|EV_PERSIST,buffered_on_read,client))
-    {
-        err_sys("event_assign error");
-    }
-    if(-1==event_add(client->listenEvent,NULL))
-    {
-        err_sys("event_add error");
-    }
-    
-    return;
 }
 /*处理客户连接
 void on_accept(int sock, short ev, void *arg)
