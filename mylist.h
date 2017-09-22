@@ -61,11 +61,11 @@
 #define ERROR_SYS_SEND 70
 #define ERROR_SYS_SERVER 71
 //消息类型
-#define MESSAGE_TEXT 1
-#define MESSAGE_VOICE 2
-#define MESSAGE_IMG 3
-#define MESSAGE_FILE 4
-#define MESSAGE_VIDEO 5
+#define MESSAGE_TEXT 101
+#define MESSAGE_VOICE 102
+#define MESSAGE_IMG 103
+#define MESSAGE_FILE 104
+#define MESSAGE_VIDEO 105
 
 
 

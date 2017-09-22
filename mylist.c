@@ -83,8 +83,9 @@ void send_back_message(client_t * client,int num,char *msg_char)
     client->myhead.l=msg_l;
     client->myhead.d=num;
     buildData(client->databuf,&client->myhead,msg_char,client->myhead.l);
-    err_msg("[client:%d] type:%d uid:%d dx:%d result:%s send_back_message",client->fd,client->myhead.t,client->uid,num,msg_char);
-    message_send(client->fd,client->databuf,sizeof(struct myhead)+msg_l);
+    int dataSize=sizeof(struct myhead)+msg_l;
+    err_msg("[client:%d] type:%d uid:%d d:%d size:%d result:%s send_back_message",client->fd,client->myhead.t,client->uid,num,dataSize,msg_char);
+    message_send(client->fd,client->databuf,dataSize);
     
 }
 //系统消息group
@@ -96,6 +97,7 @@ void send_back_group(client_t * client,struct skiplist *client_list,int num,char
     client->myhead.d=num;
     buildData(client->databuf,&client->myhead,msg_char,client->myhead.l);
     
+    int dataSize=sizeof(struct myhead)+msg_l;
     //获取用户
     client_t *client_temp;
     struct skipnode *node;
@@ -105,9 +107,9 @@ void send_back_group(client_t * client,struct skiplist *client_list,int num,char
     skiplist_foreach_forward(pos, end) {
         node = list_entry(pos, struct skipnode, link[0]);
         client_temp=(client_t *)node->value;
-        err_msg("[client:%d] type:%d uid:%d dx:%d result:%s send_back_group",client_temp->fd,client->myhead.t,client_temp->uid,num,msg_char);
+        err_msg("[client:%d] type:%d uid:%d d:%d size:%d result:%s send_back_group",client_temp->fd,client->myhead.t,client_temp->uid,num,dataSize,msg_char);
         //发送消息
-        message_send(client_temp->fd,client->databuf,sizeof(struct myhead)+msg_l);
+        message_send(client_temp->fd,client->databuf,dataSize);
     }
 }
 //打包数据
@@ -160,7 +162,9 @@ int send_single(client_t * client)
     client_t * to_client=list_user_search(client->myhead.to);
     if(to_client!=NULL)
     {
-        message_send(to_client->fd,client->databuf,client->myhead.l);
+        int dataSize=sizeof(struct myhead)+client->myhead.l;
+        err_msg("[to_client:%d] type:%d uid:%d d:%d size:%d send_single",to_client->fd,client->myhead.t,client->uid,client->myhead.d,dataSize);
+        message_send(to_client->fd,client->databuf,dataSize);
         return ACTION_ACCESS;
     }
     else
@@ -176,6 +180,7 @@ int send_mulit(client_t * client)
     group_t * to_clients=list_group_search(client->myhead.to);
     if(to_clients!=NULL)
     {
+        int dataSize=sizeof(struct myhead)+client->myhead.l;
         client_t *client_temp;
         //TAILQ_FOREACH(client, &(to_clients->clients), entries){
         // err_msg("to_client %d data:%d\n",client->rid,j);
@@ -191,7 +196,8 @@ int send_mulit(client_t * client)
             //err_msg("key:0x%08x value:%p \n",node->key, node->value);
             client_temp=(client_t *)node->value;
             //发送消息
-            message_send(client_temp->fd,client->databuf,client->myhead.l);
+            err_msg("[to_client:%d] type:%d uid:%d d:%d size:%d send_mulit",client_temp->fd,client->myhead.t,client->uid,client->myhead.d,dataSize);
+            message_send(client_temp->fd,client->databuf,dataSize);
         }
         return ACTION_ACCESS;
         
