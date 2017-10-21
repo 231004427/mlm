@@ -3,6 +3,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <netinet/udp.h>
 #include <arpa/inet.h>
 
 #include <fcntl.h>
@@ -28,7 +29,7 @@
 #define SOCKET_READ_TIMEOUT_SECONDS 10
 #define SOCKET_WRITE_TIMEOUT_SECONDS 10
 #define NUM_THREADS 1  //处理事件线程池
-#define NUM_THREADS2 100 //发送消息线程池
+#define NUM_THREADS2 1 //发送消息线程池
 #define TIME_RUN 60//定时任务时间
 #define MAX_CLEAN 10//一次性清理最大用户数
 #define MAX_NUM_OFF 5 //清理计数，M
@@ -59,15 +60,17 @@ int recv_fd(const int sock_fd);
 int setnonblock(int fd);
 void closeClientFd(client_t *client);
 void closeAndFreeClient(client_t *client);
-void server_job_function(client_t *this_client);
+void server_job_tcp(client_t *this_client);
+void server_job_udp(client_t *this_client);
 void buffered_on_read(int fd, short what, void* arg);
 void buffered_on_write(struct bufferevent *bev, void *arg);
 void buffered_on_error(int fd, short what, void *arg);
 void thread_libevent_process(int fd, short which, void *arg);
-void thread_libevent_process2(int client_fd,struct event_base *base);
+void thread_libevent_tcp(int client_fd,struct event_base *base);
 void *worker_thread(void *arg);
 void on_accept(int sock, short ev, void *arg);
-void on_accept2(int sock, short ev, void *arg);
+void on_accept_tcp(int sock, short ev, void *arg);
+void on_accept_udp(int sock,struct sockaddr_in * addr);
 bool anetKeepAlive(int fd, int interval);
 int runServer(void);
 

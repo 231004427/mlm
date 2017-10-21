@@ -74,7 +74,7 @@ int runServer(void)
 	int listenfd;
 	struct sockaddr_in listen_addr;
 	int reuseaddr_on;
-    
+
     //异常信号关注
     struct sigaction action;
     action.sa_handler = handle_pipe;
@@ -104,59 +104,64 @@ int runServer(void)
     timeout_read.tv_sec=SOCKET_READ_TIMEOUT_SECONDS;
     timeout_write.tv_sec=SOCKET_WRITE_TIMEOUT_SECONDS;
 
-	//Create our listening socket.
-	listenfd = socket(AF_INET, SOCK_STREAM, 0);
+	//Create our listening socket
+    #ifdef SERVER_UDP
+    listenfd = socket(AF_INET, SOCK_DGRAM, 0);
+    #else
+    listenfd = socket(AF_INET, SOCK_STREAM, 0);
+    #endif
+
 	if (listenfd < 0) {
-		err_sys("listen failed");
+		err_sys("socket failed");
 	}
-    
-    reuseaddr_on = 1;
     //端口释放后可立即使用
-    setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &reuseaddr_on, sizeof(reuseaddr_on));
-    
-    setsockopt(listenfd, SOL_SOCKET, SO_KEEPALIVE, (void *)&reuseaddr_on, sizeof(reuseaddr_on));
     //设置超时时间,2分钟
     //anetKeepAlive(listenfd,240);
-    
     //禁止TCP缓存
-    setsockopt(listenfd, IPPROTO_TCP, TCP_NODELAY, (void *)&reuseaddr_on, sizeof(reuseaddr_on));
-    
+    #ifndef SERVER_UDP
+        reuseaddr_on = 1;
+        setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &reuseaddr_on, sizeof(reuseaddr_on));
+        setsockopt(listenfd, SOL_SOCKET, SO_KEEPALIVE, (void *)&reuseaddr_on, sizeof(reuseaddr_on));
+        setsockopt(listenfd, IPPROTO_TCP, TCP_NODELAY, (void *)&reuseaddr_on, sizeof(reuseaddr_on));
+    #endif
+    //设置地址
 	memset(&listen_addr, 0, sizeof(listen_addr));
 	listen_addr.sin_family = AF_INET;
-    
 	listen_addr.sin_addr.s_addr = INADDR_ANY;
-    
     //inet_pton(AF_INET,"127.0.0.1",&listen_addr.sin_addr);
-    
 	listen_addr.sin_port = htons(SERVER_PORT);
+    //绑定服务
 	if (bind(listenfd, (struct sockaddr *)&listen_addr, sizeof(listen_addr)) < 0) {
 		err_sys("bind failed");
 	}
-	if (listen(listenfd, CONNECTION_BACKLOG) < 0) {
-		err_sys("listen failed");
-	}
+    //TCP
+    #ifndef SERVER_UDP
+        if (listen(listenfd, CONNECTION_BACKLOG) < 0) {
+            err_sys("TCP listen failed");
+        }
+
+    #endif
+
     err_msg("server begin listen ....\n");
-
-
-	//Set the socket to non-blocking
+	//设置非阻塞模式
 	if (setnonblock(listenfd) < 0) {
 		err_sys("failed to set server socket to non-blocking");
 	}
     //创建线程池//////////////////////////////////////////////////////
+    
     if (workqueue_init(&workqueue, NUM_THREADS2)) {
         err_sys("Failed to create work queue");
         close(listenfd);
         workqueue_shutdown(&workqueue);
         return 1;
     }
-    //创建定时任务
+    //创建定时清理任务
     //timer_task();
     
     //开启多线程事件处理线程池//////////////////////////////////////////////////////
     /*
     int ret;
     int fd[2];
-    
     threads = (LIBEVENT_THREAD *)calloc(NUM_THREADS, sizeof(LIBEVENT_THREAD));
     if (threads == NULL) {
         err_sys("calloc");
@@ -194,39 +199,41 @@ int runServer(void)
     */
     
     //主线程连接事件绑定.///////////////////////////////////////////////////////////////////////
-    
     dispatcher_thread.tid = pthread_self();
     dispatcher_thread.base = event_base_new();
     if (dispatcher_thread.base == NULL) {
         err_sys("event_init( base )");
     }
     
-    struct event ListenEvent;
-    
-    if(-1==event_assign(&ListenEvent,dispatcher_thread.base,listenfd,EV_READ|EV_PERSIST,on_accept2,NULL))
-    {
-        err_sys("event_assign error");
-    }
-    if(-1==event_add(&ListenEvent,NULL))
-    {
-        err_sys("event_add error");
-    }
+    //TCP
+    #ifdef SERVER_UDP
+        //UDP处理
+        on_accept_udp(listenfd,&listen_addr);
+    #else
+        struct event ListenEvent;
+        if(-1==event_assign(&ListenEvent,dispatcher_thread.base,listenfd,EV_READ|EV_PERSIST,on_accept_tcp,NULL))
+        {
+            err_sys("TCP event_assign error");
+        }
 
-	err_msg("Server start run ...\n");
-    
-    /* Start the event loop. */
-    if(-1==event_base_dispatch(dispatcher_thread.base))
-    {
-        err_sys("event_base_dispatch error");
-    }
-    
-    
-    //释放资源
-    struct timeval delay = { 2, 0 };
-    event_base_loopexit(dispatcher_thread.base, &delay);
-	dispatcher_thread.base = NULL;
+        if(-1==event_add(&ListenEvent,NULL))
+        {
+            err_sys("event_add error");
+        }
+
+        err_msg("Server start run ...\n");
+        
+        /* Start the event loop. */
+        if(-1==event_base_dispatch(dispatcher_thread.base))
+        {
+            err_sys("event_base_dispatch error");
+        }
+        //释放资源
+        struct timeval delay = { 2, 0 };
+        event_base_loopexit(dispatcher_thread.base, &delay);
+        dispatcher_thread.base = NULL;
+    #endif
 	close(listenfd);
-    
     pthread_rwlock_destroy(&(client_list->lock));
     pthread_rwlock_destroy(&(group_list->lock));
     
@@ -238,9 +245,44 @@ int runServer(void)
     
 	return 0;
 }
-void on_accept2(int sock, short ev, void *arg)
+void on_accept_udp(int sock_fd,struct sockaddr_in * addr)
 {
-    //err_ret("on_accept2 error");
+    socklen_t peerlen = sizeof(struct sockaddr_in); 
+    int databuf_size=MAX_READ_BUF*sizeof(char);
+    client_t *client;
+    client=buildClient();
+    client->fd=sock_fd;
+    client->address=addr;
+
+    err_msg("server from %s\n :%d" , inet_ntoa( client->address->sin_addr),ntohs(client->address->sin_port)); 
+    int n;  
+    while (1)  
+    {  
+        n = recvfrom(sock_fd, client->databuf, databuf_size, 0,  
+                     (struct sockaddr *)client->address, &peerlen);  
+        if (n == -1 && errno != EAGAIN) 
+        {  
+            //if (errno == EINTR)  continue;  
+            err_sys("recvfrom failed");  
+        }else if (n == 0 || (n==-1 && errno==EAGAIN)){
+            continue;
+        }  
+        else
+        {  
+            //新建立用户对象
+            //client_t *client;
+            //client=buildClient();
+            //client->address=calloc(1, peerlen);
+            //拷贝地址 nc -u 169.254.68.37 8792 
+            //memcpy(client->address,&peeraddr,peerlen);
+            client->size=n;
+            server_job_udp(client);
+        }  
+    }
+}
+void on_accept_tcp(int sock, short ev, void *arg)
+{
+    //err_ret("on_accept_tcp error");
     struct sockaddr_in ClientAddr;
     int nClientSocket = -1;
     socklen_t ClientLen = sizeof(ClientAddr);
@@ -251,11 +293,11 @@ void on_accept2(int sock, short ev, void *arg)
         return;
     }
     err_msg("[client:%d] connect to server ....",nClientSocket);
-    thread_libevent_process2(nClientSocket,dispatcher_thread.base);
+    thread_libevent_tcp(nClientSocket,dispatcher_thread.base);
     
     
 }
-void thread_libevent_process2(int client_fd,struct event_base *base)
+void thread_libevent_tcp(int client_fd,struct event_base *base)
 {
     //int ret;
     //char buf[128];
@@ -315,13 +357,13 @@ void buffered_on_read(int fd, short what, void* arg)
         closeAndFreeClient(client);
         return;
     }
-    job->job_function = server_job_function;
+    job->job_function = server_job_tcp;
     job->user_data = arg;*/
-    
+    err_msg("[what:%d]",fd);
     if(what&EV_READ){
         //err_msg("read %d what%d",fd,what);
         //数据读取只能使用单线程，多线程导致同时处理Client带来缓存处理问题
-        server_job_function(arg);
+        server_job_tcp(arg);
     }
     else{
         //客户关闭
@@ -329,8 +371,28 @@ void buffered_on_read(int fd, short what, void* arg)
         closeClientAll(arg);
     }
 }
-/*工作线程处理，读消息*/
-void server_job_function(client_t *this_client)
+//UDP处理线程
+void server_job_udp(client_t *this_client){
+    int i;
+    int head_size=sizeof(struct myhead);
+    socklen_t address_size=sizeof(*this_client->address);
+    err_msg("接收到的数据:[%d]",this_client->size);
+    //解码头部数据
+    if(getDataHead(this_client->databuf,&(this_client->myhead),head_size)<0){
+        err_msg("[client:%d] getDataHead faild ",this_client->fd);
+    }
+    /*
+    if(sendto(this_client->fd,this_client->databuf,this_client->size, 0,this_client->address,address_size)<0){
+        err_ret("发送失败");
+    }*/
+    err_msg("from:%d to:%d t:%d d:%d s:%d",this_client->myhead.from,this_client->myhead.to,this_client->myhead.t,this_client->myhead.d,this_client->myhead.s); 
+    err_msg("ip:%s %d" , inet_ntoa( this_client->address->sin_addr),ntohs(this_client->address->sin_port)); 
+    //业务处理
+    list_main(this_client);
+}
+
+/*TCP工作线程处理，读消息*/
+void server_job_tcp(client_t *this_client)
 {
     if(this_client!=NULL)
     {

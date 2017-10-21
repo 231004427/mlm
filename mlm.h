@@ -11,4 +11,5 @@
 #include <sys/types.h>
 #define	MAXLINE		4096	/* max text line length */
 #define	BUFFSIZE	8192	/* buffer size for reads and writes */
+//#define SERVER_UDP	1 //
 #endif

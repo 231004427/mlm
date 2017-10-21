@@ -13,8 +13,9 @@
 #define MAX_USER  100 //最大用户数
 #define MAX_GROUP  100 //最大房间数
 #define MAX_GROUP_USER 5//房间最大用户数
-#define MAX_READ_BUF 8096
-#define MAX_DATA_BUF 500000
+#define MAX_READ_BUF 8000
+#define MAX_DATA_BUF 8000
+#define TOKEN_LENGTH 32
 
 //用户注册
 #define ACTION_USER_REGIST 1
@@ -42,7 +43,7 @@
 #define ERROR_USER_REGIST_REPEAT 51
 #define ERROR_USER_REGIST_MAX 52
 #define ERROR_USER_REGIST_SYS 53
-#define ERROR_ROOM_INVITE_NOUSER 54 //用户未注册
+#define ERROR_INVITE_NOUSER 54 //用户未注册
 #define ERROR_ROOM_INVITE_REPEAT 55
 #define ERROR_ROOM_INVITE_INSERT 56
 #define ERROR_ROOM_INVITE_NOROOM 57
@@ -58,14 +59,19 @@
 #define ERROR_ROOM_CREATE_INSERT 67
 #define ERROR_SEND_SINGLE_NOUSER 68
 #define ERROR_SEND_MULTI_NOROOM 69
+
 #define ERROR_SYS_SEND 70
 #define ERROR_SYS_SERVER 71
+#define ERROR_SYS_TOKEN 72
+#define ERROR_SYS_DATA 73 //数据异常
+#define ERROR_SYS_NOREGIST 74
 //消息类型
 #define MESSAGE_TEXT 101
 #define MESSAGE_VOICE 102
 #define MESSAGE_IMG 103
 #define MESSAGE_FILE 104
 #define MESSAGE_VIDEO 105
+
 
 
 
@@ -80,20 +86,24 @@ struct myhead{
     uint32_t l;
     uint32_t from;
     uint32_t to;
+    uint32_t s;
+    char token[TOKEN_LENGTH];
 };
 
 //client
 typedef struct client {
     int fd;
-    int32_t gid;
+    uint32_t gid;
     uint32_t uid;
     struct event *listenEvent;
     struct myhead myhead;//包头
     char *readbuf;//读缓存
     char *databuf;//数据包
+    int size;
     int j;//读取偏移量头部
     int z;//读取偏移量数据
     int keep;//自动断线倒计时
+    struct sockaddr_in *address;
     //TAILQ_ENTRY(client) entries;
 } client_t;
 //group
@@ -106,7 +116,7 @@ typedef struct
 } group_t;
 //
 void list_main(client_t *);//业务处理
-
+int check_token(client_t * client);
 int buildData(char * buffer,struct myhead * head,char * data,size_t data_size);//打包数据
 int getDataHead(char * src_data,struct myhead * head,size_t head_size);//获取包头信息
 char * message_back_build(int type,int n,char *c);//生成消息

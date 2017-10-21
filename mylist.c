@@ -1,25 +1,80 @@
 #include "mlm.h"
 #include "mylist.h"
 //业务处理
-void list_main(client_t *this_client)
+void list_main(client_t * client)
 {
-    int type=this_client->myhead.t;
-    int result=0;
-    //用户未注册，关闭链接
-    if(type!=ACTION_USER_REGIST){
-        if(this_client->uid<=0){
-            err_msg("[client:%d] err user not regist",this_client->fd);
-            closeAndFreeClient(this_client);
-        }
+    //判断连接是否有效
+    if(client==NULL){
+        return;
     }
+    if(client->fd<0){
+        return;
+    }
+
+    client_t *this_client;
+    int type=client->myhead.t;
+    int result=0;
+
+    //判断用户是否验证
+    if(check_token(client)<0){
+        err_msg("[client:%d] err token",client->fd);
+        client->myhead.t=ACTION_SYS_BACK;
+        send_back_message(client,ERROR_SYS_TOKEN,"0");
+        #ifndef SERVER_UDP
+        closeAndFreeClient(client);
+        #endif
+        return;
+    }
+    if(client->myhead.from==0){
+        err_msg("[client:%d] err data",client->fd);
+        client->myhead.t=ACTION_SYS_BACK;
+        send_back_message(client,ERROR_SYS_DATA,"0");
+        #ifndef SERVER_UDP
+        closeAndFreeClient(client);
+        #endif
+        return;
+    }
+    //判断是否注册
+    #ifdef SERVER_UDP
+        //注册用户
+        this_client=list_user_search(client->myhead.from);
+        if(this_client==NULL){
+            if(type!=ACTION_USER_REGIST){
+                err_msg("[UDP client:%d] err user not regist",client->fd);
+                client->myhead.t=ACTION_SYS_BACK;
+                send_back_message(client,ERROR_SYS_NOREGIST,"0");
+                return;
+            }
+            this_client=buildClient();
+        }
+        //复制对象
+        this_client->fd=client->fd;
+        this_client->myhead=client->myhead;
+        this_client->size=client->size;
+        memcpy(this_client->address,client->address,sizeof(struct sockaddr_in));
+        memcpy(this_client->databuf,client->databuf,client->size);
+    #else
+        this_client=client;
+        if(type!=ACTION_USER_REGIST && type!=ACTION_KEEP_LIVE){
+            //TCP
+            if(this_client->uid<=0){
+                err_msg("[TCP client:%d] err user not regist",this_client->fd);
+                this_client->myhead.t=ACTION_SYS_BACK;
+                send_back_message(this_client,ERROR_SYS_NOREGIST,"0");
+                return;
+            }
+        }
+    #endif
+
     //房间操作加锁
     if(type==ACTION_ROOM_CREATE||type==ACTION_ROOM_LEAVE||type==ACTION_ROOM_INVITE_YES||type==ACTION_ROOM_DEL){
         pthread_rwlock_wrlock(&(group_list->lock));
     }
-    //处理动作
-    if (type==ACTION_USER_REGIST) {
-        //用户注册
-        result =list_user_regist(this_client);
+    //处理动作                 
+    if(type==ACTION_USER_REGIST){
+        //创建房间
+        result = list_user_regist(this_client);
+        err_msg("[list_user_regist uid :%d] ",this_client->uid);
         
     }else if(type==ACTION_ROOM_CREATE){
         //创建房间
@@ -61,14 +116,26 @@ void list_main(client_t *this_client)
     if(type==ACTION_ROOM_CREATE||type==ACTION_ROOM_LEAVE||type==ACTION_ROOM_INVITE_YES||type==ACTION_ROOM_DEL){
         pthread_rwlock_unlock(&(group_list->lock));
     }
+
     //发送处理结果
     send_back_message(this_client,result,"0");
+}
+//token
+int check_token(client_t *this_client){
+    
+    return 1;
 }
 //发送数据
 int message_send(int fd,char * data_buf,int data_size)
 {
     if(fd>0){
-        write(fd,data_buf,data_size);
+        err_msg("[client:%d] size:%d  message_send",fd,data_size,data_buf);
+
+        if(write(fd,data_buf,data_size)<0){
+            err_ret("发送失败");
+            return -1;
+        }
+
         return 1;
     }else{
         err_msg("no client error");
@@ -82,10 +149,20 @@ void send_back_message(client_t * client,int num,char *msg_char)
     int msg_l=strlen(msg_char);
     client->myhead.l=msg_l;
     client->myhead.d=num;
-    buildData(client->databuf,&client->myhead,msg_char,client->myhead.l);
+    if(buildData(client->databuf,&client->myhead,msg_char,client->myhead.l)<0){
+        err_ret("发送失败");
+        return;
+    }
     int dataSize=sizeof(struct myhead)+msg_l;
-    err_msg("[client:%d] type:%d uid:%d d:%d size:%d result:%s send_back_message",client->fd,client->myhead.t,client->uid,num,dataSize,msg_char);
-    message_send(client->fd,client->databuf,dataSize);
+    err_msg("[from:%d] type:%d uid:%d d:%d size:%d send_back_message",client->uid,client->myhead.t,client->uid,client->myhead.d,dataSize);
+    #ifdef SERVER_UDP
+        socklen_t address_size=sizeof(*client->address);
+        if(sendto(client->fd,client->databuf,dataSize, 0,client->address,address_size)<0){
+            err_ret("发送失败");
+        }
+    #else
+        message_send(client->fd,client->databuf,dataSize);
+    #endif
     
 }
 //系统消息group
@@ -95,7 +172,10 @@ void send_back_group(client_t * client,struct skiplist *client_list,int num,char
     int msg_l=strlen(msg_char);
     client->myhead.l=msg_l;
     client->myhead.d=num;
-    buildData(client->databuf,&client->myhead,msg_char,client->myhead.l);
+    if(buildData(client->databuf,&client->myhead,msg_char,client->myhead.l)<0){
+        err_ret("发送失败");
+        return;
+    }
     
     int dataSize=sizeof(struct myhead)+msg_l;
     //获取用户
@@ -107,54 +187,18 @@ void send_back_group(client_t * client,struct skiplist *client_list,int num,char
     skiplist_foreach_forward(pos, end) {
         node = list_entry(pos, struct skipnode, link[0]);
         client_temp=(client_t *)node->value;
-        err_msg("[client:%d] type:%d uid:%d d:%d size:%d result:%s send_back_group",client_temp->fd,client->myhead.t,client_temp->uid,num,dataSize,msg_char);
+        err_msg("[from:%d] type:%d uid:%d d:%d size:%d send_back_group",client->uid,client->myhead.t,client_temp->uid,num,dataSize);
         //发送消息
-        message_send(client_temp->fd,client->databuf,dataSize);
+        #ifdef SERVER_UDP
+            socklen_t address_size=sizeof(*client->address);
+            if(sendto(client_temp->fd,client->databuf,dataSize, 0,client_temp->address,address_size)<0){
+                err_ret("发送失败");
+            }
+        #else
+            message_send(client_temp->fd,client->databuf,dataSize);
+        #endif
+
     }
-}
-//打包数据
-int buildData(char * buffer,struct myhead *head,char * data,size_t data_size){
-    int i;
-    int head_size=sizeof(struct myhead);
-    head->l=htonl(head->l);
-    head->from=htonl(head->from);
-    head->to=htonl(head->to);
-    
-    int num=head_size+data_size;
-    for(i=0;i<num;i++)
-    {
-        if(i<head_size){
-            buffer[i]=((char *)head)[i];
-        }else{
-            buffer[i]=data[i-head_size];
-        }
-        //printf("%d ",buffer[i]);
-    }
-    return num;
-}
-//获取包头信息
-int getDataHead(char * src_data,struct myhead * head,size_t head_size)
-{
-    bcopy(src_data,(char *)head,head_size);
-    head->l=ntohl(head->l);
-    head->from=ntohl(head->from);
-    head->to=ntohl(head->to);
-    
-    return head_size;
-}
-//生成JSON消息
-char * JSON_build(int type,int code,char *msg,char *text,char *data)
-{
-    char * msg_char;
-    cJSON *root;
-    root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "type", type);
-    cJSON_AddNumberToObject(root, "errcode", code);
-    cJSON_AddStringToObject(root, "errmsg", msg);
-    cJSON_AddStringToObject(root, "text",text);
-    cJSON_AddStringToObject(root, "data", data);
-    msg_char=cJSON_PrintUnformatted(root);
-    return msg_char;
 }
 //单发消息
 int send_single(client_t * client)
@@ -163,14 +207,21 @@ int send_single(client_t * client)
     if(to_client!=NULL)
     {
         int dataSize=sizeof(struct myhead)+client->myhead.l;
-        err_msg("[to_client:%d] type:%d uid:%d d:%d size:%d send_single",to_client->fd,client->myhead.t,client->uid,client->myhead.d,dataSize);
-        message_send(to_client->fd,client->databuf,dataSize);
+        err_msg("[to_client:%d] type:%d from:%d d:%d size:%d send_single",to_client->uid,client->myhead.t,client->myhead.from,client->myhead.d,dataSize);
+        #ifdef SERVER_UDP
+            socklen_t address_size=sizeof(*to_client->address);
+            if(sendto(to_client->fd,client->databuf,dataSize, 0,to_client->address,address_size)<0){
+                err_ret("发送失败");
+            }
+        #else
+            message_send(to_client->fd,client->databuf,dataSize);
+        #endif
         return ACTION_ACCESS;
     }
     else
     {
         //错误无用户
-        return ERROR_SEND_SINGLE_NOUSER;
+        return ERROR_INVITE_NOUSER;
     }
 }
 //群发消息
@@ -197,7 +248,14 @@ int send_mulit(client_t * client)
             client_temp=(client_t *)node->value;
             //发送消息
             err_msg("[to_client:%d] type:%d uid:%d d:%d size:%d send_mulit",client_temp->fd,client->myhead.t,client->uid,client->myhead.d,dataSize);
-            message_send(client_temp->fd,client->databuf,dataSize);
+            #ifdef SERVER_UDP
+            socklen_t address_size=sizeof(*client_temp->address);
+            if(sendto(client_temp->fd,client->databuf,dataSize, 0,client_temp->address,address_size)<0){
+                err_ret("发送失败");
+            }
+            #else
+                message_send(client_temp->fd,client->databuf,dataSize);
+            #endif
         }
         return ACTION_ACCESS;
         
@@ -211,13 +269,6 @@ int list_user_regist(client_t *client)
 {
     //TAILQ_INSERT_TAIL(&groups[0].clients, client, entries);
     int uid=client->myhead.from;
-    //已经注册
-    if(client->uid>0)
-    {
-        //err_msg("err regitst again user");
-        //closeAndFreeClient(client);
-        return ERROR_USER_REGIST_REPEAT;
-    }
     //系统最大用户数
     if(client_list->count>=MAX_USER)
     {
@@ -225,12 +276,16 @@ int list_user_regist(client_t *client)
         //closeAndFreeClient(client);
         return ERROR_USER_REGIST_MAX;
     }
-    //重复注册
-    if(list_user_search(uid)!=NULL)
+    //已注册
+    client_t * client_temp=list_user_search(uid);
+    if(client_temp!=NULL)
     {
         //err_msg("err regitst repeat user");
-        //closeAndFreeClient(client);
-        return ERROR_USER_REGIST_REPEAT;
+        if(client_temp->fd!=client->fd){
+            closeClientAll(client_temp);
+        }else{
+            return ACTION_ACCESS;
+        }
     }
     //注册会话列表
     struct skipnode *node;
@@ -243,8 +298,8 @@ int list_user_regist(client_t *client)
         return ERROR_USER_REGIST_SYS;
     }
     client->uid=uid;
+    err_msg("user key :%d\n", client->uid);
     return ACTION_ACCESS;
-    //err_msg("user key :%d\n", client->uid);
 }
 //查找用户队列
 client_t *list_user_search(uint32_t uid)
@@ -267,53 +322,38 @@ client_t *list_user_search(uint32_t uid)
 //创建房间
 int list_group_create(client_t *client)
 {
-    //判断用户是否已经注册
-    if(client->uid<=0)
-    {
-        return ERROR_ROOM_CREATE_NOUSER;
-    }
     //系统最大房间数
     if(group_list->count>=MAX_GROUP)
     {
         return ERROR_ROOM_CREATE_MAX;
-    }
-    //判断用户已经在其他房间
-    if(client->gid>0)
-    {
-        return ERROR_ROOM_CREATE_REPEAT;
     }
     //err_msg("group_c_uid:%d\n", client->uid);
     //添加房间
     struct skipnode *node;
     
     group_t *group_buf;
-    group_buf=list_group_search(client->myhead.to);
+    group_buf=list_group_search(client->myhead.s);
     //判断是否已经创建
     if(group_buf==NULL)
     {
-    //创建房间
-    group_buf=(group_t *)calloc(1,sizeof(group_t));//申请内存
-    group_buf->uid=client->uid;
-    group_buf->type=0;
-    group_buf->gid=client->myhead.to;
-    //初始化房间用户列表
-    group_buf->clients = skiplist_new();
-    if (group_buf->clients==NULL){
-        return ERROR_ROOM_CREATE_INIT;
-    }
-        node =skiplist_insert(group_list, client->myhead.to, group_buf);
-        //skiplist_dump(group_list);
-        //err_msg("group key:%d value:%p \n", node->key, node->value);
-        if(node==NULL){
-            return ERROR_ROOM_CREATE_NEW;
+        //创建房间
+        group_buf=(group_t *)calloc(1,sizeof(group_t));//申请内存
+        group_buf->uid=client->uid;
+        group_buf->type=0;
+        group_buf->gid=client->myhead.s;
+        //初始化房间用户列表
+        group_buf->clients = skiplist_new();
+        if (group_buf->clients==NULL){
+            return ERROR_ROOM_CREATE_INIT;
         }
+            node =skiplist_insert(group_list, client->myhead.s, group_buf);
+            //skiplist_dump(group_list);
+            //err_msg("group key:%d value:%p \n", node->key, node->value);
+            if(node==NULL){
+                return ERROR_ROOM_CREATE_NEW;
+            }
     }
-    //默认加入房间用户列表
-    node=skiplist_insert(group_buf->clients, client->uid, client);
-    if(node==NULL){
-        return ERROR_ROOM_CREATE_INSERT;
-    }
-    client->gid=client->myhead.to;
+
     //err_msg("[client:%d] group:%d uid:%d\n", client->fd,client->gid,client->uid);
     return ACTION_ACCESS;
     
@@ -324,30 +364,34 @@ int list_group_invite(client_t *client)
     client_t * to_client=list_user_search(client->myhead.to);
     if(to_client!=NULL)
     {
-        message_send(to_client->fd,client->databuf,client->myhead.l);
+        //判断是否已经加入
+        //if(client->myhead.s==to_client->gid){
+        //    return ERROR_ROOM_INVITE_REPEAT;
+        //}
+        int dataSize=sizeof(struct myhead)+client->myhead.l;
+
+        #ifdef SERVER_UDP
+            socklen_t address_size=sizeof(*to_client->address);
+            if(sendto(to_client->fd,client->databuf,dataSize, 0,to_client->address,address_size)<0){
+                err_ret("发送失败");
+            }
+        #else
+            message_send(to_client->fd,client->databuf,dataSize);
+        #endif
+
         return ACTION_ACCESS;
     }
     else
     {
         //错误无用户
-        return ERROR_ROOM_INVITE_NOUSER;
+        return ERROR_INVITE_NOUSER;
     }
 }
 //加入房间
 int list_group_join(client_t *client)
 {
-    int gid=client->myhead.to;
+    int gid=client->myhead.s;
     
-    if(client->uid<=0)
-    {
-        //用户未注册
-        return ERROR_ROOM_INVITE_NOUSER;
-    }
-    if(client->gid==gid)
-    {
-        //用户已存在
-        return ERROR_ROOM_INVITE_REPEAT;
-    }
     //err_msg("加入房间qqqq%d",gid);
     group_t *group_temp=list_group_search(gid);
     if(group_temp!=NULL)
@@ -355,7 +399,7 @@ int list_group_join(client_t *client)
 
         //err_msg("加入房间%d",head->t);
         //退出原来房间
-        if(client->gid>0){
+        if(client->gid>0 && client->gid!=gid){
             /*
             struct myhead *head_buf;
             head_buf=(struct myhead *)calloc(1,sizeof(struct myhead));
@@ -371,17 +415,19 @@ int list_group_join(client_t *client)
             }*/
             client->myhead.t=ACTION_ROOM_INVITE_YES;
         }
-        //加入新房间
-        struct skipnode *node;
-        node=skiplist_insert(group_temp->clients, client->uid, client);
-        if(node==NULL){
-            //加入房间错误
-            return ERROR_ROOM_INVITE_INSERT;
+        if(client->gid==0){
+            //加入新房间
+            struct skipnode *node;
+            node=skiplist_insert(group_temp->clients, client->uid, client);
+            if(node==NULL){
+                //加入房间错误
+                return ERROR_ROOM_INVITE_INSERT;
+            }
+            //加入成功
+            client->gid=gid;
         }
-        //加入成功
-        client->gid=gid;
         //通知新房间
-        send_back_group(client,group_temp->clients,ACTION_ACCESS,"0");
+        send_back_group(client,group_temp->clients,0,"0");
         
     }else{
         //房间不存在
@@ -395,12 +441,21 @@ int list_group_join_no(client_t *client)
     client_t * to_client=list_user_search(client->myhead.to);
     if(to_client!=NULL)
     {
-        message_send(to_client->fd,client->databuf,client->myhead.l);
+        int dataSize=sizeof(struct myhead)+client->myhead.l;
+        #ifdef SERVER_UDP
+            socklen_t address_size=sizeof(*to_client->address);
+            if(sendto(to_client->fd,client->databuf,dataSize, 0,to_client->address,address_size)<0){
+                err_ret("发送失败");
+            }
+        #else
+            message_send(to_client->fd,client->databuf,dataSize);
+        #endif
+            
         return ACTION_ACCESS;
     }
     else
     {
-        return ERROR_ROOM_INVITE_NOUSER;
+        return ERROR_INVITE_NOUSER;
     }
 }
 //查找房间
@@ -434,7 +489,7 @@ int list_group_remove_user(client_t *client)
             //删除用户
             //err_msg(" 删除用户 fd:%d",client->fd);
             if(group_temp->clients==NULL){
-                return ERROR_ROOM_LEAVE_NOUSER;
+                return ERROR_INVITE_NOUSER;
             }
             skiplist_remove(group_temp->clients,client->uid);
             //判断房间用户数是否是0,type=0
@@ -455,7 +510,7 @@ int list_group_remove_user(client_t *client)
                 
             }else{
                 //通知房间其他人
-                send_back_group(client,group_temp->clients,ACTION_ACCESS,"0");
+                send_back_group(client,group_temp->clients,0,"0");
             }
             //返回消息，退出房间成功
             client->gid=0;
@@ -525,8 +580,12 @@ client_t * buildClient(){
         err_msg("client malloc failed");
         return NULL;
     }
-    //读事件监控
+    #ifdef SERVER_UDP
+    //读事件
+    client->address=calloc(1, sizeof(struct sockaddr_in));
+    #else
     client->listenEvent=calloc(1, sizeof(struct event));
+    #endif
     //读取缓存
     client->readbuf=(char *)calloc(MAX_READ_BUF,sizeof(char));/*内存在堆上*/
     if(client->readbuf==NULL){
@@ -613,6 +672,9 @@ void closeAndFreeClient(client_t *client) {
         if(client->databuf!=NULL){
         free(client->databuf);
         }
+        if(client->address!=NULL){
+            free(client->address);
+        }
         free(client);
         client=NULL;
     }
@@ -629,5 +691,59 @@ void closeClientFd(client_t *client) {
             client->fd = -1;
         }
     }
+}
+//打包数据
+int buildData(char * buffer,struct myhead *_head,char * data,size_t data_size){
+    int i;
+    int head_size=sizeof(struct myhead);
+
+    struct myhead * head= calloc(1, head_size);
+    if(head==NULL){
+        return -1;
+    }
+    memcpy(head,_head,head_size);
+
+    head->l=htonl(head->l);
+    head->from=htonl(head->from);
+    head->to=htonl(head->to);
+    head->s=htonl(head->s);
+    
+    int num=head_size+data_size;
+    for(i=0;i<num;i++)
+    {
+        if(i<head_size){
+            buffer[i]=((char *)head)[i];
+        }else{
+            buffer[i]=data[i-head_size];
+        }
+        //printf("%d ",buffer[i]);
+    }
+    free(head);
+    head=NULL;
+    return num;
+}
+//获取包头信息
+int getDataHead(char * src_data,struct myhead * head,size_t head_size)
+{
+    bcopy(src_data,(char *)head,head_size);
+    head->l=ntohl(head->l);
+    head->from=ntohl(head->from);
+    head->to=ntohl(head->to);
+    head->s=ntohl(head->s);
+    return head_size;
+}
+//生成JSON消息
+char * JSON_build(int type,int code,char *msg,char *text,char *data)
+{
+    char * msg_char;
+    cJSON *root;
+    root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "type", type);
+    cJSON_AddNumberToObject(root, "errcode", code);
+    cJSON_AddStringToObject(root, "errmsg", msg);
+    cJSON_AddStringToObject(root, "text",text);
+    cJSON_AddStringToObject(root, "data", data);
+    msg_char=cJSON_PrintUnformatted(root);
+    return msg_char;
 }
 
