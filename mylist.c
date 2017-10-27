@@ -1,5 +1,6 @@
 #include "mlm.h"
 #include "mylist.h"
+#include "data_user.h"
 //业务处理
 void list_main(client_t * client)
 {
@@ -88,7 +89,7 @@ void list_main(client_t * client)
         //单发使用 1文本,2语音，图片3,文件4,视频5
         result=send_single(this_client);
         
-    }else if(type==ACTION_SEND_MULTI){
+    }else if(type==ACTION_SEND_ROOM){
         //房间群发
         result=send_mulit(this_client);
 
@@ -228,7 +229,7 @@ int send_single(client_t * client)
 int send_mulit(client_t * client)
 {
     pthread_rwlock_rdlock(&(group_list->lock));
-    group_t * to_clients=list_group_search(client->myhead.to);
+    group_t * to_clients=list_group_search(client->myhead.s);
     if(to_clients!=NULL)
     {
         int dataSize=sizeof(struct myhead)+client->myhead.l;
@@ -246,16 +247,18 @@ int send_mulit(client_t * client)
             node = list_entry(pos, struct skipnode, link[0]);
             //err_msg("key:0x%08x value:%p \n",node->key, node->value);
             client_temp=(client_t *)node->value;
-            //发送消息
-            err_msg("[to_client:%d] type:%d uid:%d d:%d size:%d send_mulit",client_temp->fd,client->myhead.t,client->uid,client->myhead.d,dataSize);
-            #ifdef SERVER_UDP
-            socklen_t address_size=sizeof(*client_temp->address);
-            if(sendto(client_temp->fd,client->databuf,dataSize, 0,client_temp->address,address_size)<0){
-                err_ret("发送失败");
+            if(client_temp->uid!=client->uid){
+                //发送消息
+                err_msg("[to_client:%d] type:%d uid:%d d:%d size:%d send_mulit",client_temp->fd,client->myhead.t,client->uid,client->myhead.d,dataSize);
+                #ifdef SERVER_UDP
+                socklen_t address_size=sizeof(*client_temp->address);
+                if(sendto(client_temp->fd,client->databuf,dataSize, 0,client_temp->address,address_size)<0){
+                    err_ret("发送失败");
+                }
+                #else
+                    message_send(client_temp->fd,client->databuf,dataSize);
+                #endif
             }
-            #else
-                message_send(client_temp->fd,client->databuf,dataSize);
-            #endif
         }
         return ACTION_ACCESS;
         
@@ -280,7 +283,7 @@ int list_user_regist(client_t *client)
     client_t * client_temp=list_user_search(uid);
     if(client_temp!=NULL)
     {
-        //err_msg("err regitst repeat user");
+        err_msg("err regitst repeat user %d %d",client_temp->fd,client->fd);
         if(client_temp->fd!=client->fd){
             closeClientAll(client_temp);
         }else{
@@ -299,6 +302,10 @@ int list_user_regist(client_t *client)
     }
     client->uid=uid;
     err_msg("user key :%d\n", client->uid);
+
+    //更新在线状态
+    user_updateOnline(uid,1);
+
     return ACTION_ACCESS;
 }
 //查找用户队列
@@ -654,6 +661,13 @@ void closeClientAll(client_t *client)
     if(client->uid>0){
         list_user_remove_uid_pthread(client->uid);
     }
+    /*设置为离线状态*/
+
+    //更新在线状态
+    if(client->uid>0){
+    user_updateOnline(client->uid,0);
+    }
+
     //释放资源err_msg("释放资源");
     closeAndFreeClient(client);
 }

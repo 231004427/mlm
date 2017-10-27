@@ -6,7 +6,7 @@ CFLAGS=-Wall -g
 DEFS = -D__DEBUG__ 
 CFLAGS += $(DEFS)
 # 头文件查找路径  
-INC = -I./ -L/usr/local/lib -levent -lpthread -llog4c
+INC = -I./ -L/usr/local/lib -levent -lpthread -llog4c -lmysqlclient
 #源文件夹
 DIRS=.
 FILES=$(foreach dir,$(DIRS),$(wildcard $(dir)/*.c))

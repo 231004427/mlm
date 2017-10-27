@@ -4,6 +4,7 @@
  */
 #include "mlm.h"
 #include "server.h"
+#include "database.h"
 /*Main server.*/
 int main(int argc, char *argv[]) {
     return runServer();
@@ -155,6 +156,10 @@ int runServer(void)
         workqueue_shutdown(&workqueue);
         return 1;
     }
+    //初始化数据库
+    if(database_build()<0){
+        err_sys("database build failed");
+    }
     //创建定时清理任务
     //timer_task();
     
@@ -242,6 +247,9 @@ int runServer(void)
     
     workqueue_shutdown(&workqueue);
 	err_msg("Server shutdown.\n");
+
+    //关闭数据库连接
+    database_close();
     
 	return 0;
 }
