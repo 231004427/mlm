@@ -104,6 +104,7 @@ typedef struct client {
     int z;//读取偏移量数据
     int keep;//自动断线倒计时
     struct sockaddr_in *address;
+    char *token;//token
     //TAILQ_ENTRY(client) entries;
 } client_t;
 //group

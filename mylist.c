@@ -1,6 +1,8 @@
 #include "mlm.h"
 #include "mylist.h"
 #include "data_user.h"
+#include "redis_base.h"
+#include <event2/event.h>
 //业务处理
 void list_main(client_t * client)
 {
@@ -16,16 +18,6 @@ void list_main(client_t * client)
     int type=client->myhead.t;
     int result=0;
 
-    //判断用户是否验证
-    if(check_token(client)<0){
-        err_msg("[client:%d] err token",client->fd);
-        client->myhead.t=ACTION_SYS_BACK;
-        send_back_message(client,ERROR_SYS_TOKEN,"0");
-        #ifndef SERVER_UDP
-        closeAndFreeClient(client);
-        #endif
-        return;
-    }
     if(client->myhead.from==0){
         err_msg("[client:%d] err data",client->fd);
         client->myhead.t=ACTION_SYS_BACK;
@@ -66,7 +58,16 @@ void list_main(client_t * client)
             }
         }
     #endif
-
+    //判断用户TOKEN
+    if(check_token(this_client)<0){
+        err_msg("[client:%d] err token",client->fd);
+        client->myhead.t=ACTION_SYS_BACK;
+        send_back_message(client,ERROR_SYS_TOKEN,"0");
+        #ifndef SERVER_UDP
+        closeAndFreeClient(client);
+        #endif
+        return;
+    }
     //房间操作加锁
     if(type==ACTION_ROOM_CREATE||type==ACTION_ROOM_LEAVE||type==ACTION_ROOM_INVITE_YES||type==ACTION_ROOM_DEL){
         pthread_rwlock_wrlock(&(group_list->lock));
@@ -122,9 +123,24 @@ void list_main(client_t * client)
     send_back_message(this_client,result,"0");
 }
 //token
-int check_token(client_t *this_client){
+int check_token(client_t *client){
     
-    return 1;
+    //从Reids获取TOKEN
+    if(*client->token==0){
+        char key[32];
+        sprintf(key, "%d", client->myhead.from);
+        redis_base_get_str(key,client->token);
+        if(*client->token==0){
+            err_msg("[client:%d] no token",client->fd);
+            return -1;
+        }
+    }
+    //判断TOKEN是否相同
+    err_msg("[client:%d] token1:[%s]token2:[%s]",client->fd,client->token,client->myhead.token);
+    if(strcmp(client->token,client->myhead.token)==0){
+        return 1;
+    }
+    return -1;
 }
 //发送数据
 int message_send(int fd,char * data_buf,int data_size)
@@ -599,12 +615,18 @@ client_t * buildClient(){
         err_msg("client buffer malloc failed");
         return NULL;
     }
+    //数据缓存
     client->databuf=(char *)calloc(MAX_DATA_BUF,sizeof(char));
     if(client->databuf==NULL){
         err_msg("client data_buf malloc failed");
         return NULL;
     }
-    
+   //token缓存
+    client->token=(char *)calloc(TOKEN_LENGTH,sizeof(char));
+    if(client->token==NULL){
+        err_msg("client token malloc failed");
+        return NULL;
+    }
     return client;
     
 }
@@ -662,12 +684,9 @@ void closeClientAll(client_t *client)
         list_user_remove_uid_pthread(client->uid);
     }
     /*设置为离线状态*/
-
-    //更新在线状态
     if(client->uid>0){
     user_updateOnline(client->uid,0);
     }
-
     //释放资源err_msg("释放资源");
     closeAndFreeClient(client);
 }
@@ -688,6 +707,9 @@ void closeAndFreeClient(client_t *client) {
         }
         if(client->address!=NULL){
             free(client->address);
+        }
+        if(client->token!=NULL){
+            free(client->token);
         }
         free(client);
         client=NULL;

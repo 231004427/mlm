@@ -5,6 +5,7 @@
 #include "mlm.h"
 #include "server.h"
 #include "database.h"
+#include "redis_base.h"
 /*Main server.*/
 int main(int argc, char *argv[]) {
     return runServer();
@@ -160,8 +161,14 @@ int runServer(void)
     if(database_build()<0){
         err_sys("database build failed");
     }
+    //初始化redis
+    if(redis_base_build()<0){
+        err_sys("redis_base_build build failed");
+    }
     //创建定时清理任务
-    //timer_task();
+    #ifndef TIME_OFF
+    timer_task();
+    #endif
     
     //开启多线程事件处理线程池//////////////////////////////////////////////////////
     /*
@@ -250,6 +257,8 @@ int runServer(void)
 
     //关闭数据库连接
     database_close();
+    //关闭redis
+    redis_base_close();
     
 	return 0;
 }

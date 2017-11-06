@@ -33,6 +33,7 @@
 #define TIME_RUN 60//定时任务时间
 #define MAX_CLEAN 10//一次性清理最大用户数
 #define MAX_NUM_OFF 3 //清理计数，M
+//#define TIME_OFF //关闭清理任务
 
 struct timeval timeout_read;
 struct timeval timeout_write;
