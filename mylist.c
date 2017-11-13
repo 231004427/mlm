@@ -59,12 +59,12 @@ void list_main(client_t * client)
         }
     #endif
     //判断用户TOKEN
-    if(check_token(this_client)<0){
+    if(check_token(this_client)<0 && type!=ACTION_USER_REGIST){
         err_msg("[client:%d] err token",client->fd);
         client->myhead.t=ACTION_SYS_BACK;
         send_back_message(client,ERROR_SYS_TOKEN,"0");
         #ifndef SERVER_UDP
-        closeAndFreeClient(client);
+        closeClientAll(client);
         #endif
         return;
     }
@@ -124,17 +124,6 @@ void list_main(client_t * client)
 }
 //token
 int check_token(client_t *client){
-    
-    //从Reids获取TOKEN
-    if(*client->token==0){
-        char key[32];
-        sprintf(key, "%d", client->myhead.from);
-        redis_base_get_str(key,client->token);
-        if(*client->token==0){
-            err_msg("[client:%d] no token",client->fd);
-            return -1;
-        }
-    }
     //判断TOKEN是否相同
     err_msg("[client:%d] token1:[%s]token2:[%s]",client->fd,client->token,client->myhead.token);
     if(strcmp(client->token,client->myhead.token)==0){
@@ -321,6 +310,15 @@ int list_user_regist(client_t *client)
 
     //更新在线状态
     user_updateOnline(uid,1);
+
+    //从Reids获取TOKEN
+    char key[32];
+    sprintf(key, "%d", client->myhead.from);
+    redis_base_get_str(key,client->token);
+    if(*client->token==0){
+        err_msg("[client:%d] no token",client->fd);
+        return ERROR_USER_REGIST_SYS;
+    }
 
     return ACTION_ACCESS;
 }
